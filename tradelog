@@ -1,0 +1,478 @@
+#!/bin/sh
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UFT-8
+
+#IOS projekt 1
+#Juraj Hatala xhatal01
+#6.4. 2021
+
+#Priznavam ze projekt je naprogramovany trochu nesikovne
+#Dufam ze nebude moc velky pain to opravovat... pekny den.
+
+Myhelp()
+{
+	echo "NAZOV"
+	echo "           tradelog - analiza zaznamov systemu pre obchodovanie na burze "
+	echo "PREHLAD"
+	echo "       tradelog [-h|--help FILTER PRIKAZ LOG LOG2 LOG3 ...]\n"
+
+	echo "POPIS"
+	echo "	    vypise logy upravene podla zadanych argumentov na standardny vystup\n"
+	echo "	    ak nie su zadane ziadne logy v argumente tradelog cita standardy vstup\n"
+	echo "	    ak su zadane dve totozne transakcie program ich spracuje jednotlivo ako dve rozdielne\n"
+	echo "            filtre prikazy a logy mozu byt zadane v lubovolno poradi\n"
+	echo "            kazde spustenie moze obsahovat max jeden prikaz\n"
+	echo "            ak je zadanych viacej logov tak su spojene dohromady a upravovane ako jeden \n"
+	echo "      	    -h | --help, --vypis napovedu \n"
+	echo "     FILTRE:                                         \n"
+	echo "      	    -a DATETIME, --after datetime"
+	echo "                    		odstran logy starsie ako datetime, DATETIME format YYYY-MM-DD HH:MM:SS\n"
+	echo "      	    -b DATETIME, --befor datetime"
+	echo "                    		odstran logy mladsie ako datetime, DATETIME format YYYY-MM-DD HH:MM:SS\n"
+	echo "      	    -t TICKER, --ticker"
+	echo "                    		vypis len logy zadaneho tickru, pri opakovanm vyskite sa vypisuju logy podla zadaneho zoznamu tickrov\n"
+	echo "      	    -w WIDTH, --width"
+	echo "                   		sirka grafu a histogramu sa nastavi podla zadanej width, width musi byt kladne cislo\n"
+	echo "    PRIKAZY:                                          \n"
+	echo "            list-tick, --list of tickers        "
+	echo "                                vypise zoznam vyskitujucich sa tickerov\n"
+	echo "            profit"
+	echo "                                vypis celkoveho zisku z uzavretych pozicii\n"
+	echo "            pos, --position"
+	echo "                                vypis hodnot aktualne drzanych pozicii zoradenych podla stupna hodnoty\n"
+	echo "            last-price"
+	echo "                                vypis poslednej znamej ceny pre kazdy ticker\n"
+	echo "            hist-ord, --histogram"
+	echo "                                vypis poctu uzavretych transakcii podla tickerov,  ak je zadana width max pocet transakcii sa nastavi na width a zvysok sa umerne zoradi\n"
+	echo "            graph-pos, --position graph"
+	echo "                                vypis grafu hodnot aktualne drzanych pozicii kde # = +1000 USD a ! = -1000 USD"
+	echo "                                ak je zadana width tak max hodnota sa nastavi na width a podla nej sa spocita hodnota jedneho # a ! pre ostatne tickre\n"
+	
+}
+test(){
+	if echo "$filters" | grep -q '\-a'; then
+		echo "$Adatetime" | awk -F"[ :-]" '\
+		{ if(NF != 6 ) exit 2;}										#check ci je datum 6 miestny\
+		{ for(i=1;i<=NF;i++)       									# check ci su vsetky stlpce cisla\
+			 if($i !~ "^[0-9][0-9]*$") exit 2; }\
+		{ if($2 > 12 || $2 < 0) exit 2; }\'
+	fi
+	recval=$?					#prmenna $? sa musi ukladat hned po exite z awk a rovno musi byt spracovana lebo pri dalsom teste sa zmeni
+	if [ $recval = "2" ]; then						#ak predosle awk nastavilo exit tak ten sa zachiti do premennej $? a a tato podmienka exitne cely program
+		echo "Error: zle zadany datum a cas" >&2
+		exit 1
+	fi 
+
+	if echo "$filters" | grep -q '\-b'; then
+		echo "$Bdatetime" | awk -F"[ :-]" '\
+		{ if(NF != 6 ) exit 2;}										#check ci je datum 6 miestny\
+		{ for(i=1;i<=NF;i++)       									# check ci su vsetky stlpce cisla\
+			 if($i !~ "^[0-9][0-9]*$") exit 2; }\
+		{ if($2 > 12 || $2 < 0) exit 2; }                           # check ci je month od 0 do 12\'
+	fi
+	recval=$?
+	if [ $recval = "2" ]; then
+		echo "Error: zle zadany datum a cas" >&2
+		exit 1
+	fi 
+	
+	if echo "$filters" | grep -q '\-w'; then
+		echo "$width" | awk '\
+		{ if(NF != 1) exit 3;} 															# check moze byt nastavena max 1 width\
+		{ if($1 !~ "^[0-9][0-9]*$") exit 4;} 	      									# check ci je width zlozena len z kladnych cisel
+		{ if($1 == 0) exit 4;} \'
+	fi
+	recval=$?
+	if [ $recval = "4" ]; then
+		echo "Error: width moze byt len kladne cislo" >&2
+		exit 1
+	fi
+
+	echo "$commands" | awk '\
+	{ if(NF > 1) exit 5;} 	'														     									
+	recval=$?
+	if [ $recval = "5" ]; then
+		echo "Error: Naraz sa moze spustat max jeden command"
+		exit 1
+	fi
+}
+Filtering(){
+	output=""
+	if echo $filters | grep -q "\-a"; then
+	
+		output=$(echo "$value" | awk -v date="$Adatetime" '\
+		BEGIN 	{ FS="[- :]"} \
+				{ split(date,dateArr,"[- :]")} \
+				{if($1>dateArr[1]) 
+					print $0; \
+				else if($2>dateArr[2] && $1==dateArr[1])
+					print $0;
+				else if($3>dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($4>dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($5>dateArr[5] && $4==dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($6>dateArr[6] && $5==dateArr[5] && $4==dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1])	\
+					print $0;} \
+		END   	{ print Done}  \')
+		
+		value=$output
+	
+	fi
+
+	if echo $filters | grep -q "\-b"; then
+		
+		output=$(echo "$value" | awk -v date="$Bdatetime" '\
+		BEGIN 	{ FS="[- :]"} \
+				{ split(date,dateArr,"[- :]")} \
+				{if($1<dateArr[1]) 
+					print $0; \
+				else if($2<dateArr[2] && $1==dateArr[1])
+					print $0;
+				else if($3<dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($4<dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($5<dateArr[5] && $4==dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1]) \
+					print $0; \
+				else if($6<dateArr[6] && $5==dateArr[5] && $4==dateArr[4] && $3==dateArr[3] && $2==dateArr[2] && $1==dateArr[1])	\
+					print $0;} \
+		END   	{ print Done}  \')
+		
+		value=$output
+		
+	fi
+
+	if echo $filters | grep -q "\-t"; then
+		output=$(echo "$value" | awk -v tic="$tickers" '\
+		BEGIN 	{ FS=";"} \
+				{ numTic=split(tic,ticArr," ")} \
+				{for(i=1; i<=numTic; i++) \
+					if($2==ticArr[i]) \
+						print $0;} \
+		END   	{ print Done}  \')
+		value=$output
+	fi 
+}
+MyCommands(){
+	if echo $commands | grep -q "list\-tick"; then
+	TickOutput=$(echo "$value" | awk -F"[;]"  '\
+	BEGIN 	{line=0; printed=""} \
+				{
+					for(i= 0;i <= line;i++){					#zistujem ci uz mam v poli printedArr ulozeny ticker z daneho riadku
+								if($2==printedArr[i]){			#ak v poli najdem ticker tak do pola values pripocitam/odcitam objem a jednotkovu cenu updajtujem v poli lastOne
+										foundLine=1				#ak som nasiel v poli dany ticker premenna foundLine sa nastavi jedna a tak zabrani tvorbe noveho tickeru
+								}
+							}
+						if(foundLine==0){					#ak v poli printedArr nemam este vytovernu polozku s danym tickerom tak ju vytvorim
+							printedArr[line]=$2				#pridaj do pola premenna line oznacuje riadok vo vzslednom outpute
+							line++							#pripravym si premennu pre pridanie noveho tickeru
+						}
+						foundLine=0							#resetujem premennu
+				} 
+	END   	{ for(i=0;i<=line;i++)
+				print printedArr[i];}\')
+	echo "$TickOutput" | sort
+	
+	fi
+
+	if echo $commands | grep -q "profit"; then
+	echo "$value" | awk -F"[;]"  '\
+	BEGIN 	{ profit=0} \
+				{if ($3=="buy") 
+					profit=profit-($4*$6);
+				else 
+					profit=profit+($4*$6);} 
+	END   	{ printf "%.2f\n",profit;}\'
+	fi
+
+	if echo $commands | grep -q  ^"pos"; then
+	posOutput=""
+	echo "$value" | awk -F"[;]"  '
+	BEGIN 	{ line=0; foundLine=0; } \
+				{
+					for(i= 0;i <= line;i++){			#zistujem v ktorom riadku sa zhoduje s sucastny ticker s uz zadanym v poli	
+							if($2==printedArr[i]){
+									if($3=="buy"){		
+										values[i]=values[i]+$6;
+										lastOne[i]=$4;
+									}
+									else{
+										values[i]=values[i]-$6;
+										lastOne[i]=$4;
+									}
+								foundLine=1
+							}
+					}
+					if(foundLine==0){					#ak ticker nie je v poli tak sa vytvori nova polozka pola
+						printedArr[line]=$2				#pridaj do pola 
+						if($3=="buy"){
+							values[line]=$6				#pridaj do pola hodnot
+							lastOne[line]=$4
+						}
+						else{
+							values[line]=-$6
+							lastOne[line]=$4
+						}
+						line++
+					}
+					foundLine=0
+				} 
+	END   	{ for(i = 0;i < line;i++) 
+					printf "%s:%.2f\n" , printedArr[i],values[i]*lastOne[i]
+			}' |  awk -F"[:]" '
+	Begin { nb=0; maxlength=0}\
+	{
+		nb++						#zacal som s nb++ lebo mi akosi nechcel ukladat na 0 poziciu
+		printedArr[nb]=$1;			#prepisujem vysledky z minuleho awk
+		values[nb]=$2;
+		
+		if(maxlength<length($2))	#hladam najdlhsii riadok pre spravne zarovnanie cisel
+			maxlength=length($2)
+		
+	}
+	END		{for(i = 1;i <= nb;i++) 	
+					printf "%-10s: %*.2f\n" , printedArr[i],maxlength,values[i]}' | sort -k 3 -nr
+	#pouzil som zretazene awk aby som mohol pracovat len z floatami s dvoma destinymi hodnotami vo funkcii legth pri hladani spravneho zarovnania
+	#tiez som si uvedomil ze vysledky nemusim ukladat do pramennej ale mozem ich rovno vypisovat xD
+	fi
+
+	if echo $commands | grep -q "last\-price"; then
+	sortedValue=$(echo "$value" | sort -n)		#zoradim podal datumu keby mam viacej logov spojenych -n bude porade citat cisal v stringu a podla nich zoradovat dufam
+	value=$sortedValue
+	LpriceOutput=$(echo "$value" | awk -F"[;]"  '\
+	BEGIN 	{ line=0; maxLength=0; max=0; } \
+				{
+						for(i= 0;i <= line;i++){						#zistujem ci uz mam v poli printedArr ulozeny ticker z daneho riadku
+								if($2==printedArr[i]){					#ak v poli najdem ticker tak do pola values pripocitam/odcitam objem a jednotkovu cenu updajtujem v poli lastOne
+										values[i]=$4
+										foundLine=1						#ak som nasiel v poli dany ticker premenna foundLine sa nastavi jedna a tak zabrani tvorbe noveho tickeru
+										if(length($4)>maxLength)		#halda najdlhsie cislo podla ktoreho budem zarovnavat
+											maxLength=length($4)
+								}
+							}
+						if(foundLine==0){						#ak v poli printedArr nemam este vytovernu polozku s danym tickerom tak ju vytvorim
+							printedArr[line]=$2					#pridaj do pola premenna line oznacuje riadok vo vzslednom outpute
+							values[line]=$4		
+							if(length($4)>maxLength)
+								maxLength=length($4)	
+							line++								#pripravym si premennu pre pridanie noveho tickeru
+							
+						}
+						foundLine=0				#resetujem premennu
+				}
+	END   	{
+				for(i = 0;i < line;i++) 
+					printf "%-10s: %*.2f \n" , printedArr[i],maxLength,values[i]
+			}\')
+	echo "$LpriceOutput" | sort
+	fi
+
+	if echo $commands | grep -q "hist\-ord"; then
+	HistOutput=$(echo "$value" | awk -F"[;]" -v width=$width '\
+	BEGIN 	{ line=0; printed=""; foundLine=0; } \
+				{
+						for(i= 0;i <= line;i++){				#zistujem ci uz mam v poli printedArr ulozeny ticker z daneho riadku
+								if($2==printedArr[i]){			#ak v poli najdem ticker tak do pola values pripocitam/odcitam objem a jednotkovu cenu updajtujem v poli lastOne
+										values[i]=values[i]+1;
+										foundLine=1				#ak som nasiel v poli dany ticker premenna foundLine sa nastavi jedna a tak zabrani tvorbe noveho tickeru
+								}
+							}
+						if(foundLine==0){						#ak v poli printedArr nemam este vytovernu polozku s danym tickerom tak ju vytvorim
+							printedArr[line]=$2					#pridaj do pola premenna line oznacuje riadok vo vzslednom outpute
+							values[line]=1			
+							line++								#pripravym si premennu pre pridanie noveho tickeru
+						}
+						foundLine=0								#resetujem premennu
+				}
+	END   	{
+			for(i = 0;i < line;i++)								#hladam max pocet tickerov
+					{
+						if(values[i]>max)
+							max=values[i]
+					}
+			if(width=="")										#ak je width prazdne tak tak dostadim max a v dalsiom kroku bude width/max=1 takze sa vypisuju povodne cisla z pola values 
+				width=max 
+			for(i = 0;i < line;i++) 
+				{
+					printf "%-10s: ", printedArr[i]
+					for(j = 0; j < int(values[i]*(width/max)); j++)     #vypisujem ziadany pocet # ak je zadany width tak pocet # je pomer width a max, a funkcia int sposobi ze vysledok sa zaokruhli na dol(odstrani desatinne miesto)
+						printf "#"	
+					printf "\n"      #novy riadok 
+				}
+			}\')
+	echo "$HistOutput" | sort
+	fi
+
+	if echo $commands | grep -q "graph\-pos"; then
+	GraphOutput=$(echo "$value" | awk -F"[;]" -v width=$width '\
+	BEGIN 	{ line=0; foundLine=0; } \
+				{
+						for(i= 0;i <= line;i++){						#zistujem ci uz mam v poli printedArr ulozeny ticker z daneho riadku
+								if($2==printedArr[i])					#ak v poli najdem ticker tak do pola values pripocitam/odcitam objem a jednotkovu cenu updajtujem v poli lastOne
+									{
+										if($3=="buy"){					#ak nakupujem objem pripocitavam
+											values[i]=values[i]+$6;
+											lastOne[i]=$4
+										}
+										else{	# ak predavam objem odcitavam
+											values[i]=values[i]-$6;
+											lastOne[i]=$4
+										}
+										foundLine=1						#ak som nasiel v poli dany ticker premenna foundLine sa nastavi jedna a tak zabrani tvorbe noveho tickeru
+									}
+							}
+						if(foundLine==0){					#ak v poli printedArr nemam este vytovernu polozku s danym tickerom tak ju vytvorim
+							printedArr[line]=$2				#pridaj do pola premenna line oznacuje riadok vo vzslednom outpute
+							if($3=="buy"){					#ak nakupujem tak nastavim values na objem
+								values[line]=$6				
+								lastOne[line]=$4
+							}
+							else{							#ak predavam nastavim values na -objem
+								values[line]=-$6
+								lastOne[line]=$4
+							}
+							line++							#pripravym si premennu pre pridanie noveho tickeru
+						}
+						foundLine=0				#resetujem premennu
+				} 
+	END   	{ 
+			
+
+			if(width == "")							#ak nie je zadana width tak divisor bude nastaveni na 1/1000 lebo napr pre hodnotu 60000*(1/1000)sa vypise 600 # 
+				divisor=(1/1000)
+			else{									#ak je zadane width pocet # je dany ako pomerom width/max * hodnota transakcie
+				for(i = 0;i < line;i++)				#hladam max hodnotu
+					{
+						if(sqrt((lastOne[i]*values[i])^2)>max)
+							max=sqrt((lastOne[i]*values[i])^2)								#max hodnotu nastavim vzdy ako kladne cislo
+					}
+				divisor=width/max
+			}
+			for(i = 0;i < line;i++){ 													#vypisujem riadky na output
+					if(int((lastOne[i]*values[i])*divisor)==0)							#nesikovna podmienka pre splnenie zadania 
+						printf "%-10s:", printedArr[i]									#vypisem prazdny riadok "bez medzery"
+					else if(values[i]>0){												#ak je cislo kladne vypisujem "#"
+						printf "%-10s: ", printedArr[i]			
+						for(j = 0; j < int((lastOne[i]*values[i])*divisor);j++ )		# funkcia int zaokruhli cislo nadol
+							printf "#"	
+					}
+					else{
+						printf "%-10s: ", printedArr[i]
+						values[i]=sqrt(values[i]^2)										#zaporne cislo musim previest na kladne aby cyklus fungoavl jeho zapornu hodnotu vyjadruje vypisovanie ! namiesto #
+						for(j = 0; j < int((lastOne[i]*values[i])*divisor);j++ )
+							printf "!" 
+					}
+					
+					printf "\n"
+				}
+			}\')
+		echo "$GraphOutput" | sort -k 1		#vypisem podla abecedy
+	fi
+}
+
+#ZACIATOK SCRIPTU
+
+help=0				#ak sa help nastavi na 1 tak sa nic nespusti okrem help
+logfiles=""
+GlogFiles=""
+
+Adatetime=""
+Bdatetime=""
+tickers=""
+width=""
+
+filters=""
+commands=""
+value=""
+sortedValue=""
+
+while [ "$#"  -ne 0 ]		#citam argumenty a rozdelujem ich do pripravenych poli
+do 
+	if echo $1 | grep -q '\.log$'; then
+		logfiles=$logfiles$1" "
+		shift 
+	elif echo $1 | grep -q '\.gz$'; then
+		GlogFiles=$GlogFiles$1" "
+		shift
+	elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+		help=1
+		shift		
+	elif [ "$1" = "-a" ]; then									#filtre
+		filters=$filters$1" "
+		Adatetime=$Adatetime$2" "
+		Adatetime=$Adatetime$3
+		if [ $# -lt 3 ]; then echo "Error: zle zadane argumenty (malo argumentov)">&2; exit 1; fi		#ak filter nema vyzadovane pomocne argumenty shift by mohol vyskocit az za ramec argumentu a sposobil by chybu 
+		shift
+		shift
+		shift
+	elif [ "$1" = "-b" ]; then									
+		filters=$filters$1" "
+		Bdatetime=$Bdatetime$2" "
+		Bdatetime=$Bdatetime$3
+		if [ $# -lt 3 ]; then echo "Error: zle zadane argumenty (malo argumentov)">&2; exit 1; fi	
+		shift
+		shift
+		shift
+	elif [ "$1" = "-t" ]; then
+		filters=$filters$1" "
+		tickers=$tickers$2" "
+		if [ $# -lt 2 ]; then echo "Error: zle zadane argumenty (malo argumentov)">&2; exit 1; fi	
+		shift
+		shift
+	elif [ "$1" = "-w" ]; then
+		filters=$filters$1" "
+		width=$width$2" "
+		if [ $# -lt 2 ]; then echo "Error: zle zadane argumenty (malo argumentov)">&2; exit 1; fi	
+		shift
+		shift
+	elif [ "$1" = "list-tick" ]; then							#prikazy
+		commands=$commands$1" "
+		shift
+	elif [ "$1" = "profit" ]; then
+		commands=$commands$1" "
+		shift
+	elif [ "$1" = "pos" ]; then
+		commands=$commands$1" "
+		shift
+	elif [ "$1" = "last-price" ]; then
+		commands=$commands$1" "
+		shift
+	elif [ "$1" = "hist-ord" ]; then
+		commands=$commands$1" "
+		shift
+	elif [ "$1" = "graph-pos" ]; then
+		commands=$commands$1" "
+		shift			
+	else		
+		echo "Error: neznamy prikaz">&2			#ak sa dany argument nezhoduje so ziadnym prikazom ani filtrom vypisem error
+	 	exit 1
+	fi
+	
+done
+
+test		#spustim testy vystupov
+
+if [ $help -eq 0 ];then
+	if [ "$logfiles" != "" ]; then		#otvorim logfiles
+		value=`cat $logfiles`
+	fi
+	if [ -n "$GlogFiles" ]; then
+		value=$value$(gunzip -c $GlogFiles)		#otvorim gzip files
+	fi
+	if [ -z "$GlogFiles" -a -z "$logfiles" ]; then		#ak nie su zadane ziadne logy citam zo stdin
+		value=`cat`
+	fi
+
+	
+
+	Filtering		#pustim na value filtre
+	MyCommands		#spustim commandy
+
+	if [ -z "$commands" ];then		#ak neboli commandy zadane tak len precitam prefiltrovany input
+		echo "$value"
+	fi
+else
+	Myhelp
+fi
